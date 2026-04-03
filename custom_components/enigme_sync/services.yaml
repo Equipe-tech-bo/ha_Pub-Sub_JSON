@@ -1,11 +1,1 @@
-sync:
-  name: Sync énigmes
-  description: "Republier l'état des énigmes depuis le JSON vers MQTT"
-  fields:
-    path:
-      name: Path
-      description: "Chemin : 'BR', 'BR.CRYPTE', ou 'BR.CRYPTE.BOITE_PONCTION'"
-      required: true
-      example: "BR.CRYPTE"
-      selector:
-        text:
+
