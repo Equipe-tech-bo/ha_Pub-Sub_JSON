@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Enigme Sync",
-        "description": "Cliquez sur Soumettre pour ajouter l'intégration Enigme Sync."
+        "description": "Cliquez sur Soumettre pour ajouter Enigme Sync."
       }
     },
     "abort": {
-      "already_configured": "L'intégration est déjà configurée."
+      "already_configured": "Déjà configuré."
     }
   }
 }
