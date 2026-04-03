@@ -170,7 +170,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
-
+        _LOGGER.debug(f"[EnigmeSync] Parts : {parts}")
+        
         # On empile dans la queue, on n'écrit plus directement
         await write_queue.put((parts, payload))
 
@@ -331,8 +332,13 @@ async def _async_ensure_json_file(hass, path: str):
 
 def _set_nested(d: dict, keys: list, value):
     for key in keys[:-1]:
-        d = d.setdefault(key, {})
+        existing = d.get(key)
+        # Si la valeur existante n'est pas un dict (ex: string), on l'écrase
+        if not isinstance(existing, dict):
+            d[key] = {}
+        d = d[key]
     d[keys[-1]] = value
+
 
 
 def _get_nested(d: dict, keys: list):
