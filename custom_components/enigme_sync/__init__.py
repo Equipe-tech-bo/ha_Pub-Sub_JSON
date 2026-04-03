@@ -89,65 +89,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get("topic_blacklist") or
         ", ".join(DEFAULT_TOPIC_BLACKLIST)
     )
-    topic_blacklist = _parse_list_str(raw_blacklist)   # ["ACTION","NETWORK","OTA"]
+    topic_blacklist = _parse_list_str(raw_blacklist)
 
-    # Profondeurs ACTION — ex: "3" → [3]  /  "3, 4" → [3, 4]
+    # Profondeurs ACTION
     raw_depths = (
         entry.options.get("action_depths") or
         entry.data.get("action_depths") or
         ", ".join(str(d) for d in DEFAULT_ACTION_DEPTHS)
     )
-    action_depths = _parse_list_str(raw_depths, cast=int)  # [3] ou [3, 4]
+    action_depths = _parse_list_str(raw_depths, cast=int)
 
     _LOGGER.info(f"[EnigmeSync] MQTT filter    : {mqtt_filter}")
     _LOGGER.info(f"[EnigmeSync] JSON path      : {json_path}")
     _LOGGER.info(f"[EnigmeSync] Blacklist      : {topic_blacklist}")
     _LOGGER.info(f"[EnigmeSync] Action depths  : {action_depths}")
 
-    _ensure_json_file(json_path)
+    await _async_ensure_json_file(hass, json_path)  # ← async
 
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
         topic   = msg.topic
         payload = msg.payload
-    
+
         # Blacklist : ignore si un segment du topic est dans la liste
         parts = topic.split("/")
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
             return
-    
+
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
-    
-        data = _load_json(json_path)
-    
+
+        data = await _async_load_json(hass, json_path)  # ← async
+
         if payload == "" or payload is None:
-            # Supprime la clé et remonte nettoyer les parents vides
             _delete_in_dict(data, parts)
         else:
             _set_nested(data, parts, payload)
-    
+
         # Nettoyage récursif des nœuds vides restants
         cleaned = _clean_empty(data)
         if cleaned is None:
             cleaned = {}
-    
-        _save_json(json_path, cleaned)
-    
-    await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
 
+        await _async_save_json(hass, json_path, cleaned)  # ← async
+
+    await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
 
     # ── SERVICE sync ──────────────────────────────────────────────────── #
     async def handle_sync(call):
         l1 = call.data.get("level1", "").strip()
         l2 = call.data.get("level2", "").strip()
         l3 = call.data.get("level3", "").strip()
-    
-        # Reconstruit le path depuis les levels, ignore les vides
+
         parts = [p for p in [l1, l2, l3] if p]
-    
-        data = _load_json(json_path)
-    
+
+        data = await _async_load_json(hass, json_path)  # ← async
+
         if parts:
             subtree = _get_nested(data, parts)
             if subtree is None:
@@ -157,10 +154,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         else:
             subtree    = data
             base_topic = ""
-    
+
         await _publish_recursive(hass, subtree, base_topic, action_depths, topic_blacklist)
 
     hass.services.async_register(DOMAIN, "sync", handle_sync)
+
+    # Rechargement si options modifiées
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
 
@@ -250,24 +250,30 @@ async def _publish_action(hass, node: dict, enigme_topic: str, topic_blacklist: 
 
 
 # ── UTILITAIRES JSON ──────────────────────────────────────────────────── #
-def _ensure_json_file(path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):
+async def _async_load_json(hass, path: str) -> dict:
+    def _read():
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    return await hass.async_add_executor_job(_read)
+
+
+async def _async_save_json(hass, path: str, data: dict):
+    def _write():
         with open(path, "w") as f:
-            json.dump({}, f, indent=4)
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    await hass.async_add_executor_job(_write)
 
 
-def _load_json(path: str) -> dict:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_json(path: str, data: dict):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+async def _async_ensure_json_file(hass, path: str):
+    def _ensure():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, "w") as f:
+                json.dump({}, f, indent=4)
+    await hass.async_add_executor_job(_ensure)
 
 
 def _set_nested(d: dict, keys: list, value):
