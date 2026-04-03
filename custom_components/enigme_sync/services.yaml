@@ -2,10 +2,26 @@ sync:
   name: "Synchroniser les états"
   description: "Renvoie les états stockés dans le JSON vers les ESP via MQTT"
   fields:
-    path:
-      name: "Path"
-      description: "Chemin dans le JSON à synchroniser (ex: BR ou BR.CRYPTE). Laisser vide pour tout synchroniser."
+    level1:
+      name: "Niveau 1 (ex: BR)"
+      description: "Premier niveau du chemin. Laisser vide pour tout synchroniser."
       required: false
       example: "BR"
+      selector:
+        text:
+
+    level2:
+      name: "Niveau 2 (ex: CRYPTE)"
+      description: "Deuxième niveau du chemin."
+      required: false
+      example: "CRYPTE"
+      selector:
+        text:
+
+    level3:
+      name: "Niveau 3 (ex: SOCLE_MAGIE)"
+      description: "Troisième niveau du chemin."
+      required: false
+      example: "SOCLE_MAGIE"
       selector:
         text:
