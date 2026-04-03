@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Enigme Sync",
+        "description": "Click Submit to add the Enigme Sync integration."
+      }
+    },
+    "abort": {
+      "already_configured": "Already configured."
+    }
+  }
+}
