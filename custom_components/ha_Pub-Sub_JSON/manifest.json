@@ -1,11 +1,10 @@
-sync:
-  name: Sync enigmes
-  description: Republier etat des enigmes depuis le JSON vers MQTT
-  fields:
-    path:
-      name: Path
-      description: "Chemin: BR, BR.CRYPTE, ou BR.CRYPTE.BOITE_PONCTION"
-      required: true
-      example: "BR.CRYPTE"
-      selector:
-        text:
+{
+  "domain": "enigme_sync",
+  "name": "Enigme Sync",
+  "version": "1.0.0",
+  "documentation": "https://github.com/TON_USER/enigme-sync",
+  "issue_tracker": "https://github.com/TON_USER/enigme-sync/issues",
+  "dependencies": ["mqtt"],
+  "codeowners": ["@TON_USER"],
+  "iot_class": "local_push"
+}
