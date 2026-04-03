@@ -143,25 +143,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         l2 = call.data.get("level2", "").strip()
         l3 = call.data.get("level3", "").strip()
     
-        # Reconstruit le path en ignorant les niveaux vides
+        # Reconstruit le path depuis les levels, ignore les vides
         parts = [p for p in [l1, l2, l3] if p]
-        path  = ".".join(parts)  # ex: "BR.CRYPTE.SOCLE_MAGIE"
-        
-        path_param = call.data.get("path", "").strip()
-
+    
         data = _load_json(json_path)
-
-        if path_param:
-            keys = path_param.split(".")
-            subtree = _get_nested(data, keys)
+    
+        if parts:
+            subtree = _get_nested(data, parts)
             if subtree is None:
-                _LOGGER.warning(f"[EnigmeSync] Chemin introuvable dans le JSON : {path_param}")
+                _LOGGER.warning(f"[EnigmeSync] Chemin introuvable dans le JSON : {'.'.join(parts)}")
                 return
-            base_topic = "/".join(keys)
+            base_topic = "/".join(parts)
         else:
             subtree    = data
             base_topic = ""
-
+    
         await _publish_recursive(hass, subtree, base_topic, action_depths, topic_blacklist)
 
     hass.services.async_register(DOMAIN, "sync", handle_sync)
@@ -182,22 +178,19 @@ async def _publish_recursive(
     action_depths: list,
     topic_blacklist: list,
 ):
-    """
-    Parcourt le JSON et publie sur ENIGME/ACTION
-    uniquement aux profondeurs configurées.
-
-    Exemple avec action_depths = [3] et base = "BR" :
-      BR/CRYPTE/SOCLE_MAGIE  →  profondeur 3  →  publie ACTION ✓
-      BR/CRYPTE/LOT/ENIGME   →  profondeur 4  →  non publié   ✗
-
-    Avec action_depths = [3, 4] les deux sont publiés.
-    """
     if not isinstance(node, dict):
+        return
+
+    # Vérifie si on est déjà à la bonne profondeur
+    current_depth = len(base_topic.split("/")) if base_topic else 0
+
+    if current_depth in action_depths:
+        # On est exactement sur le nœud cible → on publie directement
+        await _publish_action(hass, node, base_topic, topic_blacklist)
         return
 
     for key, value in node.items():
 
-        # Ignore les clés blacklistées
         if key in topic_blacklist:
             continue
 
@@ -205,10 +198,8 @@ async def _publish_recursive(
         depth       = len(child_topic.split("/"))
 
         if depth in action_depths:
-            # On est à la bonne profondeur → on publie les données de ce nœud
             await _publish_action(hass, value, child_topic, topic_blacklist)
         else:
-            # On descend récursivement
             await _publish_recursive(hass, value, child_topic, action_depths, topic_blacklist)
 
 
