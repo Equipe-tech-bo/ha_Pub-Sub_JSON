@@ -28,7 +28,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not mqtt_filter:
         mqtt_filter = DEFAULT_MQTT_FILTER
         _LOGGER.warning("[EnigmeSync] mqtt_filter non trouvé, utilisation de la valeur par défaut")
-
+    # Force le chemin absolu
+    if json_path and not json_path.startswith("/"):
+        json_path = "/" + json_path
+        _LOGGER.warning(f"[EnigmeSync] json_path corrigé : {json_path}")
     if not json_path:
         json_path = DEFAULT_JSON_PATH
         _LOGGER.warning("[EnigmeSync] json_path non trouvé, utilisation de la valeur par défaut")
