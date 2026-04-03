@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Enigme Sync",
-        "description": "Click Submit to add the Enigme Sync integration."
+        "description": "Click Submit to add Enigme Sync."
       }
     },
     "abort": {
