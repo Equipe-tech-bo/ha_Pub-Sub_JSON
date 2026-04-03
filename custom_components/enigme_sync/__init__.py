@@ -23,6 +23,47 @@ def _parse_list_str(raw: str, cast=str) -> list:
     """Convertit une chaîne 'A, B, C' en liste typée."""
     return [cast(x.strip()) for x in raw.split(",") if x.strip()]
 
+def _clean_empty(node):
+    """
+    Supprime récursivement les clés dont la valeur est vide ou ne contient
+    que des valeurs vides (dict vide, string vide, None).
+    Retourne None si le nœud entier est vide après nettoyage.
+    """
+    if not isinstance(node, dict):
+        # Valeur scalaire : vide si None ou string vide
+        if node is None or node == "":
+            return None
+        return node
+
+    cleaned = {}
+    for key, value in node.items():
+        result = _clean_empty(value)
+        if result is not None:
+            cleaned[key] = result
+
+    # Si le dict est vide après nettoyage, on retourne None
+    return cleaned if cleaned else None
+
+def _delete_in_dict(data: dict, keys: list):
+    """
+    Supprime la clé terminale dans le dict imbriqué selon le chemin keys.
+    Nettoie ensuite les parents devenus vides.
+    """
+    if not keys:
+        return
+
+    key = keys[0]
+
+    if len(keys) == 1:
+        # Clé terminale : on supprime
+        data.pop(key, None)
+        return
+
+    if key in data and isinstance(data[key], dict):
+        _delete_in_dict(data[key], keys[1:])
+        # Si le sous-dict est maintenant vide, on supprime le parent aussi
+        if not data[key]:
+            data.pop(key, None)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
@@ -69,20 +110,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def mqtt_message_received(msg):
         topic   = msg.topic
         payload = msg.payload
-
+    
         # Blacklist : ignore si un segment du topic est dans la liste
         parts = topic.split("/")
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
             return
-
+    
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
-
+    
         data = _load_json(json_path)
-        _set_nested(data, parts, payload)
-        _save_json(json_path, data)
-
+    
+        if payload == "" or payload is None:
+            # Supprime la clé et remonte nettoyer les parents vides
+            _delete_in_dict(data, parts)
+        else:
+            _set_nested(data, parts, payload)
+    
+        # Nettoyage récursif des nœuds vides restants
+        cleaned = _clean_empty(data)
+        if cleaned is None:
+            cleaned = {}
+    
+        _save_json(json_path, cleaned)
+    
     await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
+
 
     # ── SERVICE sync ──────────────────────────────────────────────────── #
     async def handle_sync(call: ServiceCall):
