@@ -6,7 +6,7 @@ et les resynchroniser via MQTT.
 ## MQTT
 
 - Écoute : `+/+/+/ACTION`
-- Stocke dans `/config/enigmes.json`
+- Stocke dans `config/www/log/session.json`
 
 ## Service
 
