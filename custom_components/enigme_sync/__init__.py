@@ -138,7 +138,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
     # ── SERVICE sync ──────────────────────────────────────────────────── #
-    async def handle_sync(call: ServiceCall):
+    async def handle_sync(call):
+        l1 = call.data.get("level1", "").strip()
+        l2 = call.data.get("level2", "").strip()
+        l3 = call.data.get("level3", "").strip()
+    
+        # Reconstruit le path en ignorant les niveaux vides
+        parts = [p for p in [l1, l2, l3] if p]
+        path  = ".".join(parts)  # ex: "BR.CRYPTE.SOCLE_MAGIE"
+        
         path_param = call.data.get("path", "").strip()
 
         data = _load_json(json_path)
