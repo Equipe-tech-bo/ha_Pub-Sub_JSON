@@ -2,7 +2,7 @@
   "domain": "enigme_sync",
   "name": "Enigme Sync",
   "version": "1.0.3",
-  "documentation": "https://github.com/ton-user/enigme-sync",
+  "documentation": "https://github.com/Equipe-tech-bo/ha_Pub-Sub_JSON",
   "config_flow": true,
   "dependencies": [],
   "codeowners": ["@Equipe-tech-bo"],
