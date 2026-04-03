@@ -1,0 +1,11 @@
+sync:
+  name: "Synchroniser les états"
+  description: "Renvoie les états stockés dans le JSON vers les ESP via MQTT"
+  fields:
+    path:
+      name: "Path"
+      description: "Chemin dans le JSON à synchroniser (ex: BR ou BR.CRYPTE). Laisser vide pour tout synchroniser."
+      required: false
+      example: "BR"
+      selector:
+        text:
