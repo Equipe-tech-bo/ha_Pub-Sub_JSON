@@ -10,20 +10,34 @@ from .const import (
     DOMAIN,
     TOPIC_ACTION_SUFFIX,
     SYNC_PAYLOAD_PREFIX,
+    DEFAULT_MQTT_FILTER,
+    DEFAULT_JSON_PATH,
 )
+
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Setup de l'intégration via config entry."""
 
     # Récupère la config (options prioritaires sur data)
     mqtt_filter = entry.options.get("mqtt_filter") or entry.data.get("mqtt_filter")
     json_path   = entry.options.get("json_path")   or entry.data.get("json_path")
 
+    # Sécurité : valeurs par défaut si toujours None
+    if not mqtt_filter:
+        mqtt_filter = DEFAULT_MQTT_FILTER
+        _LOGGER.warning("[EnigmeSync] mqtt_filter non trouvé, utilisation de la valeur par défaut")
+
+    if not json_path:
+        json_path = DEFAULT_JSON_PATH
+        _LOGGER.warning("[EnigmeSync] json_path non trouvé, utilisation de la valeur par défaut")
+
     _LOGGER.info(f"[EnigmeSync] Abonnement MQTT sur : {mqtt_filter}")
     _LOGGER.info(f"[EnigmeSync] Fichier JSON : {json_path}")
+    _LOGGER.debug(f"[EnigmeSync] entry.data    = {entry.data}")
+    _LOGGER.debug(f"[EnigmeSync] entry.options = {entry.options}")
+
 
     # Création du fichier JSON s'il n'existe pas
     _ensure_json_file(json_path)
