@@ -64,6 +64,10 @@ def _delete_in_dict(data: dict, keys: list):
         # Si le sous-dict est maintenant vide, on supprime le parent aussi
         if not data[key]:
             data.pop(key, None)
+            
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Recharge l'entrée si les options sont modifiées."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
