@@ -12,153 +12,181 @@ from .const import (
     SYNC_PAYLOAD_PREFIX,
     DEFAULT_MQTT_FILTER,
     DEFAULT_JSON_PATH,
+    DEFAULT_TOPIC_BLACKLIST,
+    DEFAULT_ACTION_DEPTHS,
 )
-
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def _parse_list_str(raw: str, cast=str) -> list:
+    """Convertit une chaîne 'A, B, C' en liste typée."""
+    return [cast(x.strip()) for x in raw.split(",") if x.strip()]
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
-    # Récupère la config (options prioritaires sur data)
-    mqtt_filter = entry.options.get("mqtt_filter") or entry.data.get("mqtt_filter")
-    json_path   = entry.options.get("json_path")   or entry.data.get("json_path")
+    # ── Config ────────────────────────────────────────────────────────── #
+    mqtt_filter = (
+        entry.options.get("mqtt_filter") or
+        entry.data.get("mqtt_filter") or
+        DEFAULT_MQTT_FILTER
+    )
+    json_path = (
+        entry.options.get("json_path") or
+        entry.data.get("json_path") or
+        DEFAULT_JSON_PATH
+    )
 
-    # Sécurité : valeurs par défaut si toujours None
-    if not mqtt_filter:
-        mqtt_filter = DEFAULT_MQTT_FILTER
-        _LOGGER.warning("[EnigmeSync] mqtt_filter non trouvé, utilisation de la valeur par défaut")
-    # Force le chemin absolu
-    if json_path and not json_path.startswith("/"):
+    # Chemin absolu
+    if not json_path.startswith("/"):
         json_path = "/" + json_path
-        _LOGGER.warning(f"[EnigmeSync] json_path corrigé : {json_path}")
-    if not json_path:
-        json_path = DEFAULT_JSON_PATH
-        _LOGGER.warning("[EnigmeSync] json_path non trouvé, utilisation de la valeur par défaut")
 
-    _LOGGER.info(f"[EnigmeSync] Abonnement MQTT sur : {mqtt_filter}")
-    _LOGGER.info(f"[EnigmeSync] Fichier JSON : {json_path}")
-    _LOGGER.debug(f"[EnigmeSync] entry.data    = {entry.data}")
-    _LOGGER.debug(f"[EnigmeSync] entry.options = {entry.options}")
+    # Blacklist — topics à ignorer à la réception
+    raw_blacklist = (
+        entry.options.get("topic_blacklist") or
+        entry.data.get("topic_blacklist") or
+        ", ".join(DEFAULT_TOPIC_BLACKLIST)
+    )
+    topic_blacklist = _parse_list_str(raw_blacklist)   # ["ACTION","NETWORK","OTA"]
 
+    # Profondeurs ACTION — ex: "3" → [3]  /  "3, 4" → [3, 4]
+    raw_depths = (
+        entry.options.get("action_depths") or
+        entry.data.get("action_depths") or
+        ", ".join(str(d) for d in DEFAULT_ACTION_DEPTHS)
+    )
+    action_depths = _parse_list_str(raw_depths, cast=int)  # [3] ou [3, 4]
 
-    # Création du fichier JSON s'il n'existe pas
+    _LOGGER.info(f"[EnigmeSync] MQTT filter    : {mqtt_filter}")
+    _LOGGER.info(f"[EnigmeSync] JSON path      : {json_path}")
+    _LOGGER.info(f"[EnigmeSync] Blacklist      : {topic_blacklist}")
+    _LOGGER.info(f"[EnigmeSync] Action depths  : {action_depths}")
+
     _ensure_json_file(json_path)
 
-    # ------------------------------------------------------------------ #
-    #  CALLBACK MQTT — Stockage automatique dans le JSON                  #
-    # ------------------------------------------------------------------ #
+    # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
-        topic   = msg.topic          # ex: BR/CRYPTE/SOCLE_MAGIE/DATA/VALIDE
-        payload = msg.payload        # ex: "1"
+        topic   = msg.topic
+        payload = msg.payload
+
+        # Blacklist : ignore si un segment du topic est dans la liste
+        parts = topic.split("/")
+        if any(p in topic_blacklist for p in parts):
+            _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
+            return
 
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
 
-        # Décompose le topic en liste de clés
-        keys = topic.split("/")      # ["BR","CRYPTE","SOCLE_MAGIE","DATA","VALIDE"]
-
-        # Charge le JSON existant
         data = _load_json(json_path)
-
-        # Insère / met à jour la valeur dans l'arbre
-        _set_nested(data, keys, payload)
-
-        # Sauvegarde
+        _set_nested(data, parts, payload)
         _save_json(json_path, data)
 
-        _LOGGER.debug(f"[EnigmeSync] JSON mis à jour → {keys} = {payload}")
-
-    # Abonnement MQTT
     await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
 
-    # ------------------------------------------------------------------ #
-    #  SERVICE HA — Republication vers MQTT                               #
-    # ------------------------------------------------------------------ #
+    # ── SERVICE sync ──────────────────────────────────────────────────── #
     async def handle_sync(call: ServiceCall):
-        """
-        Service enigme_sync.sync
-        Paramètre optionnel 'path' : ex 'BR', 'BR.CRYPTE', 'BR.CRYPTE.SOCLE_MAGIE'
-        Si absent → republier tout le JSON
-        """
-        path_param = call.data.get("path", "")  # ex: "BR.CRYPTE"
+        path_param = call.data.get("path", "").strip()
 
         data = _load_json(json_path)
 
         if path_param:
-            # Navigue jusqu'au nœud demandé
             keys = path_param.split(".")
             subtree = _get_nested(data, keys)
             if subtree is None:
-                _LOGGER.warning(f"[EnigmeSync] Path introuvable dans le JSON : {path_param}")
+                _LOGGER.warning(f"[EnigmeSync] Chemin introuvable dans le JSON : {path_param}")
                 return
             base_topic = "/".join(keys)
         else:
             subtree    = data
             base_topic = ""
 
-        # Publie récursivement
-        await _publish_recursive(hass, subtree, base_topic)
+        await _publish_recursive(hass, subtree, base_topic, action_depths, topic_blacklist)
 
     hass.services.async_register(DOMAIN, "sync", handle_sync)
-
-    # Rechargement si options modifiées
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    hass.services.async_remove(DOMAIN, "sync")
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
-    """Recharge l'intégration si la config change."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
-# ------------------------------------------------------------------ #
-#  PUBLICATION RÉCURSIVE                                              #
-# ------------------------------------------------------------------ #
-async def _publish_recursive(hass: HomeAssistant, node, base_topic: str):
+# ── PUBLICATION RECURSIVE ─────────────────────────────────────────────── #
+async def _publish_recursive(
+    hass,
+    node,
+    base_topic: str,
+    action_depths: list,
+    topic_blacklist: list,
+):
     """
-    Parcourt l'arbre JSON et publie chaque feuille.
+    Parcourt le JSON et publie sur ENIGME/ACTION
+    uniquement aux profondeurs configurées.
 
-    Pour un nœud feuille à BR/CRYPTE/SOCLE_MAGIE/DATA/VALIDE = "1"
-    → publie sur  BR/CRYPTE/SOCLE_MAGIE/ACTION
-    → payload     sync "DATA": { "VALIDE": "1" }
+    Exemple avec action_depths = [3] et base = "BR" :
+      BR/CRYPTE/SOCLE_MAGIE  →  profondeur 3  →  publie ACTION ✓
+      BR/CRYPTE/LOT/ENIGME   →  profondeur 4  →  non publié   ✗
+
+    Avec action_depths = [3, 4] les deux sont publiés.
     """
-    if isinstance(node, dict):
-        for key, value in node.items():
-            child_topic = f"{base_topic}/{key}" if base_topic else key
-            await _publish_recursive(hass, value, child_topic)
-    else:
-        # On est sur une feuille
-        # base_topic = BR/CRYPTE/SOCLE_MAGIE/DATA/VALIDE
-        parts = base_topic.split("/")
+    if not isinstance(node, dict):
+        return
 
-        if len(parts) < 2:
-            _LOGGER.warning(f"[EnigmeSync] Topic trop court pour reconstruire ACTION : {base_topic}")
-            return
+    for key, value in node.items():
 
-        # Le topic ACTION = tout sauf les 2 derniers segments + /ACTION
-        # ex: BR/CRYPTE/SOCLE_MAGIE  +  /ACTION
-        enigme_parts   = parts[:-2]          # ["BR","CRYPTE","SOCLE_MAGIE"]
-        data_key       = parts[-2]           # "DATA"
-        value_key      = parts[-1]           # "VALIDE"
+        # Ignore les clés blacklistées
+        if key in topic_blacklist:
+            continue
 
-        action_topic   = "/".join(enigme_parts) + f"/{TOPIC_ACTION_SUFFIX}"
+        child_topic = f"{base_topic}/{key}" if base_topic else key
+        depth       = len(child_topic.split("/"))
 
-        # Construit le payload : sync "DATA": { "VALIDE": "1" }
-        payload = f'{SYNC_PAYLOAD_PREFIX} "{data_key}": {{ "{value_key}": "{node}" }}'
+        if depth in action_depths:
+            # On est à la bonne profondeur → on publie les données de ce nœud
+            await _publish_action(hass, value, child_topic, topic_blacklist)
+        else:
+            # On descend récursivement
+            await _publish_recursive(hass, value, child_topic, action_depths, topic_blacklist)
+
+
+async def _publish_action(hass, node, enigme_topic: str, topic_blacklist: list):
+    """
+    Publie sur ENIGME/ACTION le payload de sync
+    pour toutes les données du nœud.
+
+    topic  : BR/CRYPTE/SOCLE_MAGIE
+    publie : BR/CRYPTE/SOCLE_MAGIE/ACTION
+    payload: sync "DATA": { "VALIDE": "1" }
+    """
+    if not isinstance(node, dict):
+        return
+
+    action_topic = f"{enigme_topic}/{TOPIC_ACTION_SUFFIX}"
+
+    for data_key, data_value in node.items():
+
+        # Ignore les clés blacklistées
+        if data_key in topic_blacklist:
+            continue
+
+        if isinstance(data_value, dict):
+            # Plusieurs valeurs sous DATA → on les sérialise
+            inner = ", ".join(
+                f'"{k}": "{v}"'
+                for k, v in data_value.items()
+                if k not in topic_blacklist
+            )
+            payload = f'{SYNC_PAYLOAD_PREFIX} "{data_key}": {{ {inner} }}'
+        else:
+            payload = f'{SYNC_PAYLOAD_PREFIX} "{data_key}": "{data_value}"'
 
         _LOGGER.info(f"[EnigmeSync] Publish [{action_topic}] : {payload}")
-
         await mqtt.async_publish(hass, action_topic, payload)
 
 
-# ------------------------------------------------------------------ #
-#  UTILITAIRES JSON                                                   #
-# ------------------------------------------------------------------ #
+# ── UTILITAIRES JSON ──────────────────────────────────────────────────── #
 def _ensure_json_file(path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not os.path.exists(path):
@@ -180,14 +208,12 @@ def _save_json(path: str, data: dict):
 
 
 def _set_nested(d: dict, keys: list, value):
-    """Insère value dans d en suivant la liste de clés."""
     for key in keys[:-1]:
         d = d.setdefault(key, {})
     d[keys[-1]] = value
 
 
 def _get_nested(d: dict, keys: list):
-    """Retourne le sous-arbre correspondant au chemin de clés."""
     for key in keys:
         if isinstance(d, dict) and key in d:
             d = d[key]
