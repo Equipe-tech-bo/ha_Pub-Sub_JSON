@@ -151,39 +151,50 @@ async def _publish_recursive(
             await _publish_recursive(hass, value, child_topic, action_depths, topic_blacklist)
 
 
-async def _publish_action(hass, node, enigme_topic: str, topic_blacklist: list):
+async def _publish_action(hass, node: dict, enigme_topic: str, topic_blacklist: list):
     """
-    Publie sur ENIGME/ACTION le payload de sync
-    pour toutes les données du nœud.
+    Publie sur ENIGME/ACTION toutes les données du nœud enigme en un seul message.
 
-    topic  : BR/CRYPTE/SOCLE_MAGIE
-    publie : BR/CRYPTE/SOCLE_MAGIE/ACTION
-    payload: sync "DATA": { "VALIDE": "1" }
+    Exemple de nœud :
+    {
+        "DATA": { "VALIDE": "1", "TEST": "0" },
+        "STATUS": "SOLVED"
+    }
+
+    Publie :
+        BR/CRYPTE/SOCLE_MAGIE/ACTION → sync { "DATA": { "VALIDE": "1", "TEST": "0" }, "STATUS": "SOLVED" }
     """
     if not isinstance(node, dict):
         return
 
     action_topic = f"{enigme_topic}/{TOPIC_ACTION_SUFFIX}"
 
-    for data_key, data_value in node.items():
-
-        # Ignore les clés blacklistées
-        if data_key in topic_blacklist:
+    # On filtre les clés blacklistées et on reconstruit un dict propre
+    filtered = {}
+    for key, value in node.items():
+        if key in topic_blacklist:
             continue
 
-        if isinstance(data_value, dict):
-            # Plusieurs valeurs sous DATA → on les sérialise
-            inner = ", ".join(
-                f'"{k}": "{v}"'
-                for k, v in data_value.items()
-                if k not in topic_blacklist
-            )
-            payload = f'{SYNC_PAYLOAD_PREFIX} "{data_key}": {{ {inner} }}'
+        if isinstance(value, dict):
+            # Filtre aussi les sous-clés blacklistées
+            sub_filtered = {
+                sub_key: sub_val
+                for sub_key, sub_val in value.items()
+                if sub_key not in topic_blacklist
+            }
+            if sub_filtered:
+                filtered[key] = sub_filtered
         else:
-            payload = f'{SYNC_PAYLOAD_PREFIX} "{data_key}": "{data_value}"'
+            filtered[key] = value
 
-        _LOGGER.info(f"[EnigmeSync] Publish [{action_topic}] : {payload}")
-        await mqtt.async_publish(hass, action_topic, payload)
+    if not filtered:
+        return
+
+    # Sérialisation en JSON compact
+    payload = f"{SYNC_PAYLOAD_PREFIX} {json.dumps(filtered, ensure_ascii=False)}"
+
+    _LOGGER.info(f"[EnigmeSync] Publish [{action_topic}] : {payload}")
+    await mqtt.async_publish(hass, action_topic, payload)
 
 
 # ── UTILITAIRES JSON ──────────────────────────────────────────────────── #
