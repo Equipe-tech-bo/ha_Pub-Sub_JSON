@@ -2,12 +2,24 @@
   "config": {
     "step": {
       "user": {
-        "title": "Enigme Sync",
-        "description": "Cliquez sur Soumettre pour ajouter Enigme Sync."
+        "title": "Configuration Enigme Sync",
+        "description": "Configurez l'abonnement MQTT et le chemin du fichier de session.",
+        "data": {
+          "mqtt_filter": "Pattern d'abonnement MQTT (ex: BR/#)",
+          "json_path":   "Chemin du fichier JSON (ex: config/www/log/session.json)"
+        }
       }
-    },
-    "abort": {
-      "already_configured": "Déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options Enigme Sync",
+        "data": {
+          "mqtt_filter": "Pattern d'abonnement MQTT",
+          "json_path":   "Chemin du fichier JSON"
+        }
+      }
     }
   }
 }
