@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import asyncio
 
+from collections import deque
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt
@@ -18,6 +20,41 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# ── Queue globale par entry ────────────────────────────────────────────── #
+_write_queues: dict[str, asyncio.Queue] = {}
+
+async def _json_writer(hass: HomeAssistant, json_path: str, queue: asyncio.Queue):
+    """
+    Coroutine unique qui traite les écritures JSON une par une.
+    Tourne en permanence tant que l'entry est chargée.
+    """
+    while True:
+        item = await queue.get()
+
+        if item is None:            # Signal d'arrêt propre
+            queue.task_done()
+            break
+
+        parts, payload = item
+
+        try:
+            data = await _async_load_json(hass, json_path)
+
+            if payload == "" or payload is None:
+                _delete_in_dict(data, parts)
+            else:
+                _set_nested(data, parts, payload)
+
+            cleaned = _clean_empty(data) or {}
+            await _async_save_json(hass, json_path, cleaned)
+
+            _LOGGER.debug(f"[EnigmeSync] Écrit [{'/'.join(parts)}] = {payload}")
+
+        except Exception as e:
+            _LOGGER.error(f"[EnigmeSync] Erreur écriture JSON : {e}")
+
+        finally:
+            queue.task_done()
 
 def _parse_list_str(raw: str, cast=str) -> list:
     """Convertit une chaîne 'A, B, C' en liste typée."""
@@ -83,11 +120,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DEFAULT_JSON_PATH
     )
 
-    # Chemin absolu
     if not json_path.startswith("/"):
         json_path = "/" + json_path
 
-    # Blacklist — topics à ignorer à la réception
     raw_blacklist = (
         entry.options.get("topic_blacklist") or
         entry.data.get("topic_blacklist") or
@@ -95,7 +130,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     topic_blacklist = _parse_list_str(raw_blacklist)
 
-    # Profondeurs ACTION
     raw_depths = (
         entry.options.get("action_depths") or
         entry.data.get("action_depths") or
@@ -108,14 +142,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info(f"[EnigmeSync] Blacklist      : {topic_blacklist}")
     _LOGGER.info(f"[EnigmeSync] Action depths  : {action_depths}")
 
-    await _async_ensure_json_file(hass, json_path)  # ← async
+    await _async_ensure_json_file(hass, json_path)
+
+    # ── Queue d'écriture ──────────────────────────────────────────────── #
+    write_queue = asyncio.Queue()
+    _write_queues[entry.entry_id] = write_queue
+
+    # Lance la coroutine d'écriture en tâche de fond
+    writer_task = hass.async_create_task(
+        _json_writer(hass, json_path, write_queue),
+        name=f"enigme_sync_writer_{entry.entry_id}"
+    )
 
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
         topic   = msg.topic
         payload = msg.payload
 
-        # Blacklist : ignore si un segment du topic est dans la liste
         parts = topic.split("/")
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
@@ -123,19 +166,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
 
-        data = await _async_load_json(hass, json_path)  # ← async
-
-        if payload == "" or payload is None:
-            _delete_in_dict(data, parts)
-        else:
-            _set_nested(data, parts, payload)
-
-        # Nettoyage récursif des nœuds vides restants
-        cleaned = _clean_empty(data)
-        if cleaned is None:
-            cleaned = {}
-
-        await _async_save_json(hass, json_path, cleaned)  # ← async
+        # On empile dans la queue, on n'écrit plus directement
+        await write_queue.put((parts, payload))
 
     await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
 
@@ -147,7 +179,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         parts = [p for p in [l1, l2, l3] if p]
 
-        data = await _async_load_json(hass, json_path)  # ← async
+        # Attend que la queue soit vide avant de lire
+        # pour être sûr d'avoir le JSON à jour
+        await write_queue.join()
+
+        data = await _async_load_json(hass, json_path)
 
         if parts:
             subtree = _get_nested(data, parts)
@@ -163,7 +199,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "sync", handle_sync)
 
-    # Rechargement si options modifiées
+    # ── Nettoyage a l'unload ───────────────────────────────────────────── #
+    async def _on_unload():
+        # Envoie le signal d'arrêt à la coroutine writer
+        await write_queue.put(None)
+        await asyncio.wait_for(writer_task, timeout=5.0)
+        _write_queues.pop(entry.entry_id, None)
+        _LOGGER.debug("[EnigmeSync] Writer arrêté proprement")
+
+    entry.async_on_unload(_on_unload)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
