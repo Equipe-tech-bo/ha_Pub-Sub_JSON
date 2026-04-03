@@ -156,8 +156,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
-        topic   = msg.topic
+        topic = msg.topic
         payload = msg.payload
+    
+        # ── Blacklist FERMETURE sur les topics STATE ─────────────────────── #
+        if topic.endswith("/STATE") and payload == "FERMETURE":
+            _LOGGER.debug(f"[EnigmeSync] Ignoré : {topic} = FERMETURE (protection anti-reboot)")
+            return  # On n'écrit pas dans le JSON
 
         parts = topic.split("/")
         if any(p in topic_blacklist for p in parts):
