@@ -1,7 +1,15 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from .const import DOMAIN, DEFAULT_JSON_PATH, DEFAULT_MQTT_FILTER
+
+from .const import (
+    DOMAIN,
+    DEFAULT_JSON_PATH,
+    DEFAULT_MQTT_FILTER,
+    DEFAULT_TOPIC_BLACKLIST,
+    DEFAULT_ACTION_DEPTHS,
+)
+
 
 class EnigmeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow pour Enigme Sync."""
@@ -21,12 +29,18 @@ class EnigmeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(
                 "mqtt_filter",
                 default=DEFAULT_MQTT_FILTER,
-                description="Pattern d'abonnement MQTT (ex: BR/#)"
             ): str,
             vol.Required(
                 "json_path",
                 default=DEFAULT_JSON_PATH,
-                description="Chemin du fichier JSON (ex: config/www/log/session.json)"
+            ): str,
+            vol.Optional(
+                "topic_blacklist",
+                default=", ".join(DEFAULT_TOPIC_BLACKLIST),
+            ): str,
+            vol.Optional(
+                "action_depths",
+                default=", ".join(str(d) for d in DEFAULT_ACTION_DEPTHS),
             ): str,
         })
 
@@ -52,20 +66,35 @@ class EnigmeSyncOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        # Lecture de la valeur actuelle : options en priorité, sinon data initiale
+        def _get(key, default):
+            return self._config_entry.options.get(
+                key,
+                self._config_entry.data.get(key, default)
+            )
+
         schema = vol.Schema({
             vol.Required(
                 "mqtt_filter",
-                default=self._config_entry.options.get(
-                    "mqtt_filter",
-                    self._config_entry.data.get("mqtt_filter", DEFAULT_MQTT_FILTER)
-                )
+                default=_get("mqtt_filter", DEFAULT_MQTT_FILTER),
             ): str,
             vol.Required(
                 "json_path",
-                default=self._config_entry.options.get(
-                    "json_path",
-                    self._config_entry.data.get("json_path", DEFAULT_JSON_PATH)
-                )
+                default=_get("json_path", DEFAULT_JSON_PATH),
+            ): str,
+            vol.Optional(
+                "topic_blacklist",
+                default=_get(
+                    "topic_blacklist",
+                    ", ".join(DEFAULT_TOPIC_BLACKLIST)
+                ),
+            ): str,
+            vol.Optional(
+                "action_depths",
+                default=_get(
+                    "action_depths",
+                    ", ".join(str(d) for d in DEFAULT_ACTION_DEPTHS)
+                ),
             ): str,
         })
 
