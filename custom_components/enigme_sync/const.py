@@ -1,13 +1,13 @@
 DOMAIN = "enigme_sync"
 
-DEFAULT_JSON_PATH   = "config/www/log/session.json"
-DEFAULT_MQTT_FILTER = "BR/#"
+TOPIC_ACTION_SUFFIX  = "ACTION"
+SYNC_PAYLOAD_PREFIX  = "sync"
 
-# Suffixe du topic écouté pour stocker
-TOPIC_STORE_SUFFIX  = "ACTION"
+DEFAULT_MQTT_FILTER  = "BR/#"
+DEFAULT_JSON_PATH    = "/config/www/log/session.json"
 
-# Suffixe du topic ciblé pour la resynchronisation
-TOPIC_ACTION_SUFFIX = "ACTION"
+# Suffixes de topics à ignorer (blacklist réception)
+DEFAULT_TOPIC_BLACKLIST = ["ACTION", "RESET"]
 
-# Préfixe du payload de resynchronisation
-SYNC_PAYLOAD_PREFIX = "sync"
+# Profondeurs où envoyer l'ACTION (ex: 3 = SALLE/PIECE/ENIGME)
+DEFAULT_ACTION_DEPTHS = [3]
