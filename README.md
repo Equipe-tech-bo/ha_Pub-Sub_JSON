@@ -3,7 +3,7 @@
 Intégration Home Assistant pour stocker les états d'énigmes dans un JSON
 et les resynchroniser via MQTT.
 
-## MQTT
+## MQTT 
 
 - Écoute : `+/+/+/ACTION`
 - Stocke dans `config/www/log/session.json`
