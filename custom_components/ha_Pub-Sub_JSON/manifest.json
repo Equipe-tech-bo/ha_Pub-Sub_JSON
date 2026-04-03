@@ -1,10 +1,10 @@
 {
   "domain": "enigme_sync",
   "name": "Enigme Sync",
-  "version": "1.0.1",
-  "documentation": "https://github.com/TON_USER/enigme-sync",
-  "issue_tracker": "https://github.com/TON_USER/enigme-sync/issues",
-  "dependencies": ["mqtt"],
+  "version": "1.0.3",
+  "documentation": "https://github.com/ton-user/enigme-sync",
+  "config_flow": true,
+  "dependencies": [],
   "codeowners": ["@Equipe-tech-bo"],
   "iot_class": "local_push"
 }
