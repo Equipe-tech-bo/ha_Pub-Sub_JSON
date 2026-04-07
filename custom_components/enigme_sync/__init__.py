@@ -24,9 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 # ── Queue globale par entry ────────────────────────────────────────────── #
 _write_queues: dict[str, asyncio.Queue] = {}
 
-# ── Cooldown anti-FERMETURE ───────────────────────────────────────────── #
-_fermeture_cooldown: dict[str, float] = {}  # topic_prefix → timestamp fin cooldown
-FERMETURE_COOLDOWN_MS = 3.0  # 3s pour avoir de la marge
+
 
 async def _json_writer(hass: HomeAssistant, json_path: str, queue: asyncio.Queue):
     """
@@ -148,7 +146,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info(f"[EnigmeSync] Action depths  : {action_depths}")
 
     await _async_ensure_json_file(hass, json_path)
-
+    
+    # ── Cooldown anti-FERMETURE ───────────────────────────────────────────── #
+    _fermeture_cooldown: dict[str, float] = {}  # topic_prefix → timestamp fin cooldown
+    FERMETURE_COOLDOWN_MS = 3.0  # 3s pour avoir de la marge
+    
     # ── Queue d'écriture ──────────────────────────────────────────────── #
     write_queue = asyncio.Queue()
     _write_queues[entry.entry_id] = write_queue
