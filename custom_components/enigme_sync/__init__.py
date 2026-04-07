@@ -164,26 +164,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def mqtt_message_received(msg):
         topic = msg.topic
         payload = msg.payload
-
+    
         parts = topic.split("/")
-        enigme_prefix = "/".join(parts[:-1])  # ex: BR/CRYPTE/SOCLE_OR
-
-        # ── Gestion du flag FERMETURE ────────────────────────────────── #
+    
+        # ── Préfixe fixé à profondeur 3 (BR/LIEU/ENIGME) ─────────────────── #
+        if len(parts) < 3:
+            enigme_prefix = "/".join(parts)
+        else:
+            enigme_prefix = "/".join(parts[:3])  # toujours BR/PRISON/TABLEAU_DES_SORTS
+    
+        # ── Gestion du flag FERMETURE ────────────────────────────────────── #
         if topic.endswith("/STATE"):
             if payload == "FERMETURE":
                 fermeture_set.add(enigme_prefix)
                 _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → FERMETURE, écriture bloquée")
-                return  # on n'écrit pas FERMETURE dans le JSON
+                return
             else:
-                fermeture_set.discard(enigme_prefix)  # libère le blocage
+                fermeture_set.discard(enigme_prefix)
                 _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → {payload}, écriture débloquée")
-
-        # ── Si l'énigme est en FERMETURE → on ignore ─────────────────── #
+    
+        # ── Si l'énigme est en FERMETURE → on ignore ─────────────────────── #
         if enigme_prefix in fermeture_set:
             _LOGGER.debug(f"[EnigmeSync] Ignoré (FERMETURE) : {topic} = {payload}")
             return
-
-        parts = topic.split("/")
+    
+        # ── Blacklist ─────────────────────────────────────────────────────── #
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
             return
