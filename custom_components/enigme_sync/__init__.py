@@ -18,10 +18,15 @@ from .const import (
     DEFAULT_ACTION_DEPTHS,
 )
 
+
 _LOGGER = logging.getLogger(__name__)
 
 # ── Queue globale par entry ────────────────────────────────────────────── #
 _write_queues: dict[str, asyncio.Queue] = {}
+
+# ── Cooldown anti-FERMETURE ───────────────────────────────────────────── #
+_fermeture_cooldown: dict[str, float] = {}  # topic_prefix → timestamp fin cooldown
+FERMETURE_COOLDOWN_MS = 3.0  # 3s pour avoir de la marge
 
 async def _json_writer(hass: HomeAssistant, json_path: str, queue: asyncio.Queue):
     """
@@ -158,6 +163,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def mqtt_message_received(msg):
         topic = msg.topic
         payload = msg.payload
+    
+        import time
+    
+        # ── Extraire le préfixe de l'énigme (tout sauf le dernier segment) ── #
+        parts = topic.split("/")
+        enigme_prefix = "/".join(parts[:-1])  # ex: BR/CRYPTE/SOCLE_OR
+    
+        now = time.monotonic()
+    
+        # ── Détection FERMETURE → démarre cooldown ────────────────────────── #
+        if topic.endswith("/STATE") and payload == "FERMETURE":
+            _LOGGER.debug(f"[EnigmeSync] FERMETURE détecté sur {topic}, cooldown {FERMETURE_COOLDOWN_MS*1000:.0f}ms")
+            _fermeture_cooldown[enigme_prefix] = now + FERMETURE_COOLDOWN_MS
+            return  # On n'écrit pas FERMETURE dans le JSON
+    
+        # ── Si l'énigme est en cooldown → on ignore ───────────────────────── #
+        if enigme_prefix in _fermeture_cooldown:
+            if now < _fermeture_cooldown[enigme_prefix]:
+                _LOGGER.debug(f"[EnigmeSync] Ignoré (cooldown FERMETURE) : {topic} = {payload}")
+                return
+            else:
+                # Cooldown expiré, on nettoie
+                del _fermeture_cooldown[enigme_prefix]
     
         # ── Blacklist FERMETURE sur les topics STATE ─────────────────────── #
         if topic.endswith("/STATE") and payload == "FERMETURE":
