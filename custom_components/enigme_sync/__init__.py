@@ -147,9 +147,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await _async_ensure_json_file(hass, json_path)
     
-    # ── Cooldown anti-FERMETURE ───────────────────────────────────────────── #
-    _fermeture_cooldown: dict[str, float] = {}  # topic_prefix → timestamp fin cooldown
-    FERMETURE_COOLDOWN_MS = 3.0  # 3s pour avoir de la marge
+    # ── Énigmes en état FERMETURE ────────────────────────────────────── #
+    fermeture_set: set[str] = set()
     
     # ── Queue d'écriture ──────────────────────────────────────────────── #
     write_queue = asyncio.Queue()
@@ -165,34 +164,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def mqtt_message_received(msg):
         topic = msg.topic
         payload = msg.payload
-    
-        import time
-    
-        # ── Extraire le préfixe de l'énigme (tout sauf le dernier segment) ── #
+
         parts = topic.split("/")
         enigme_prefix = "/".join(parts[:-1])  # ex: BR/CRYPTE/SOCLE_OR
-    
-        now = time.monotonic()
-    
-        # ── Détection FERMETURE → démarre cooldown ────────────────────────── #
-        if topic.endswith("/STATE") and payload == "FERMETURE":
-            _LOGGER.debug(f"[EnigmeSync] FERMETURE détecté sur {topic}, cooldown {FERMETURE_COOLDOWN_MS*1000:.0f}ms")
-            _fermeture_cooldown[enigme_prefix] = now + FERMETURE_COOLDOWN_MS
-            return  # On n'écrit pas FERMETURE dans le JSON
-    
-        # ── Si l'énigme est en cooldown → on ignore ───────────────────────── #
-        if enigme_prefix in _fermeture_cooldown:
-            if now < _fermeture_cooldown[enigme_prefix]:
-                _LOGGER.debug(f"[EnigmeSync] Ignoré (cooldown FERMETURE) : {topic} = {payload}")
-                return
+
+        # ── Gestion du flag FERMETURE ────────────────────────────────── #
+        if topic.endswith("/STATE"):
+            if payload == "FERMETURE":
+                fermeture_set.add(enigme_prefix)
+                _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → FERMETURE, écriture bloquée")
+                return  # on n'écrit pas FERMETURE dans le JSON
             else:
-                # Cooldown expiré, on nettoie
-                del _fermeture_cooldown[enigme_prefix]
-    
-        # ── Blacklist FERMETURE sur les topics STATE ─────────────────────── #
-        if topic.endswith("/STATE") and payload == "FERMETURE":
-            _LOGGER.debug(f"[EnigmeSync] Ignoré : {topic} = FERMETURE (protection anti-reboot)")
-            return  # On n'écrit pas dans le JSON
+                fermeture_set.discard(enigme_prefix)  # libère le blocage
+                _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → {payload}, écriture débloquée")
+
+        # ── Si l'énigme est en FERMETURE → on ignore ─────────────────── #
+        if enigme_prefix in fermeture_set:
+            _LOGGER.debug(f"[EnigmeSync] Ignoré (FERMETURE) : {topic} = {payload}")
+            return
 
         parts = topic.split("/")
         if any(p in topic_blacklist for p in parts):
