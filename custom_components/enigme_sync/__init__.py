@@ -159,7 +159,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _json_writer(hass, json_path, write_queue),
         name=f"enigme_sync_writer_{entry.entry_id}"
     )
-
+    
+    # ── Variables PING ────────────────────────────────────────────────── #
+    ping_task: asyncio.Task | None = None
+    ping_running = False
+    ping_interval = DEFAULT_PING_INTERVAL
+    
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
         topic = msg.topic
@@ -241,7 +246,51 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
+    
+    # ── PING périodique ───────────────────────────────────────────────── #
+    async def _ping_all_enigmes():
+        """Envoie PING sur le topic ACTION de chaque énigme du JSON."""
+        while ping_running:
+            await write_queue.join()  # attend que le JSON soit à jour
 
+            data = await _async_load_json(hass, json_path)
+
+            await _ping_recursive(hass, data, [], action_depths, topic_blacklist)
+
+            await asyncio.sleep(ping_interval)
+
+    # ── SERVICE start_ping ────────────────────────────────────────────── #
+    async def handle_start_ping(call):
+        nonlocal ping_task, ping_running, ping_interval  # ✅ binding trouvé
+
+        ping_interval = call.data.get("interval", DEFAULT_PING_INTERVAL)
+
+        if ping_running:
+            _LOGGER.info("[EnigmeSync] PING déjà en cours, redémarrage...")
+            ping_running = False
+            if ping_task:
+                ping_task.cancel()
+                ping_task = None
+
+        ping_running = True
+        ping_task = hass.async_create_task(
+            _ping_all_enigmes(),
+            name="enigme_sync_ping"
+        )
+        _LOGGER.info(f"[EnigmeSync] PING démarré (intervalle: {ping_interval}s)")
+
+    # ── SERVICE stop_ping ─────────────────────────────────────────────── #
+    async def handle_stop_ping(call):
+        nonlocal ping_running, ping_task  # ✅ binding trouvé
+
+        ping_running = False
+        if ping_task:
+            ping_task.cancel()
+            ping_task = None
+        _LOGGER.info("[EnigmeSync] PING arrêté")
+
+    hass.services.async_register(DOMAIN, "start_ping", handle_start_ping)
+    hass.services.async_register(DOMAIN, "stop_ping", handle_stop_ping)
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, "sync")
@@ -373,74 +422,19 @@ def _get_nested(d: dict, keys: list):
             return None
     return d
 
-# ── PING périodique ───────────────────────────────────────────────────── #
-
-ping_task: asyncio.Task | None = None
-ping_running = False
-
-async def _ping_all_enigmes():
-    """Envoie PING sur le topic ACTION de chaque énigme du JSON."""
-    while ping_running:
-        await write_queue.join()  # attend que le JSON soit à jour
-
-        data = await _async_load_json(hass, json_path)
-
-        # Parcourt jusqu'à la profondeur action_depths (ex: 3)
-        await _ping_recursive(hass, data, [], action_depths, topic_blacklist)
-
-        await asyncio.sleep(ping_interval)
-
-
+# ── HORS de async_setup_entry ─────────────────────────────────────────── #
 async def _ping_recursive(hass, node, path_parts, action_depths, topic_blacklist):
     """Parcourt le JSON et envoie PING à la bonne profondeur."""
     if not isinstance(node, dict):
         return
-
-    depth = len(path_parts)
 
     for key, value in node.items():
         child_parts = path_parts + [key]
         child_depth = len(child_parts)
 
         if child_depth in action_depths:
-            # On est sur une énigme → on ping
             enigme_topic = "/".join(child_parts) + f"/{TOPIC_ACTION_SUFFIX}"
             _LOGGER.debug(f"[EnigmeSync] PING → {enigme_topic}")
             await mqtt.async_publish(hass, enigme_topic, PING_PAYLOAD)
         else:
             await _ping_recursive(hass, value, child_parts, action_depths, topic_blacklist)
-
-
-# ── SERVICE start_ping ────────────────────────────────────────────────── #
-async def handle_start_ping(call):
-    nonlocal ping_task, ping_running, ping_interval
-
-    ping_interval = call.data.get("interval", DEFAULT_PING_INTERVAL)
-
-    if ping_running:
-        _LOGGER.info("[EnigmeSync] PING déjà en cours, redémarrage...")
-        ping_running = False
-        if ping_task:
-            ping_task.cancel()
-
-    ping_running = True
-    ping_task = hass.async_create_task(
-        _ping_all_enigmes(),
-        name="enigme_sync_ping"
-    )
-    _LOGGER.info(f"[EnigmeSync] PING démarré (intervalle: {ping_interval}s)")
-
-
-# ── SERVICE stop_ping ─────────────────────────────────────────────────── #
-async def handle_stop_ping(call):
-    nonlocal ping_running, ping_task
-
-    ping_running = False
-    if ping_task:
-        ping_task.cancel()
-        ping_task = None
-    _LOGGER.info("[EnigmeSync] PING arrêté")
-
-
-hass.services.async_register(DOMAIN, "start_ping", handle_start_ping)
-hass.services.async_register(DOMAIN, "stop_ping", handle_stop_ping)
