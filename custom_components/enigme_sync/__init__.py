@@ -144,18 +144,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return f"{PING_ENTITY_PREFIX}{name}{PING_ENTITY_SUFFIX}"
 
     async def _set_ping_entity(enigme_prefix: str, state: bool):
-        """Met à jour l'input_boolean correspondant."""
         entity_id = _enigme_entity_id(enigme_prefix)
         service = "turn_on" if state else "turn_off"
+        _LOGGER.info(f"[EnigmeSync] SET {entity_id} → {service}")  # ← AJOUTE ÇA
         try:
             await hass.services.async_call(
                 "input_boolean", service,
                 {"entity_id": entity_id},
-                blocking=False
+                blocking=True  # ← change à True pour détecter les erreurs
             )
-            _LOGGER.debug(f"[EnigmeSync] {entity_id} → {state}")
         except Exception as e:
-            _LOGGER.warning(f"[EnigmeSync] Impossible de set {entity_id}: {e}")
+            _LOGGER.error(f"[EnigmeSync] ERREUR set {entity_id}: {e}")
 
     def _ping_timeout(enigme_prefix: str):
         """Appelé si aucun STATE reçu après PING_TIMEOUT."""
@@ -223,11 +222,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ── PING périodique ───────────────────────────────────────────────── #
     async def _ping_all_enigmes():
         """Envoie PING et démarre un timer par énigme."""
-        while ping_running:
-            await write_queue.join()
-            data = await _async_load_json(hass, json_path)
-            await _ping_recursive_with_timeout(data, [])
-            await asyncio.sleep(ping_interval)
+        _LOGGER.info("[EnigmeSync] _ping_all_enigmes démarré")
+        try:
+            while ping_running:
+                _LOGGER.info("[EnigmeSync] PING cycle début...")
+                await write_queue.join()
+                data = await _async_load_json(hass, json_path)
+                _LOGGER.info(f"[EnigmeSync] JSON chargé, clés: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                await _ping_recursive_with_timeout(data, [])
+                _LOGGER.info(f"[EnigmeSync] PING cycle terminé, sleep {ping_interval}s")
+                await asyncio.sleep(ping_interval)
+        except asyncio.CancelledError:
+            _LOGGER.info("[EnigmeSync] _ping_all_enigmes annulé")
+            raise
+        except Exception as e:
+            _LOGGER.error(f"[EnigmeSync] _ping_all_enigmes CRASH: {e}", exc_info=True)
 
     async def _ping_recursive_with_timeout(node, path_parts):
         if not isinstance(node, dict):
