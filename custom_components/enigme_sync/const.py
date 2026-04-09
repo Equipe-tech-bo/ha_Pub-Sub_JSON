@@ -11,3 +11,9 @@ DEFAULT_TOPIC_BLACKLIST = ["ACTION", "RESET"]
 
 # Profondeurs où envoyer l'ACTION (ex: 3 = SALLE/PIECE/ENIGME)
 DEFAULT_ACTION_DEPTHS = [3]
+
+# Intervalle du ping en secondes
+DEFAULT_PING_INTERVAL = 30
+
+# Payload du ping
+PING_PAYLOAD = "PING"
