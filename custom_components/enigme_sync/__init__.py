@@ -163,45 +163,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.async_create_task(_set_ping_entity(enigme_prefix, False))
         _LOGGER.warning(f"[EnigmeSync] TIMEOUT PING → {enigme_prefix}")
 
-    # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
-    async def mqtt_message_received(msg):
-        topic = msg.topic
-        payload = msg.payload
-        parts = topic.split("/")
+async def mqtt_message_received(msg):
+    topic = msg.topic
+    payload = msg.payload
+    parts = topic.split("/")
 
-        if len(parts) < 3:
-            enigme_prefix = "/".join(parts)
+    if len(parts) < 3:
+        enigme_prefix = "/".join(parts)
+    else:
+        enigme_prefix = "/".join(parts[:3])
+
+    # ── Réponse au PING (TOUJOURS traité, même en FERMETURE) ──── #
+    if topic.endswith("/STATE") and enigme_prefix in pending_pings:
+        timer = pending_pings.pop(enigme_prefix)
+        timer.cancel()
+        hass.async_create_task(_set_ping_entity(enigme_prefix, True))
+        _LOGGER.debug(f"[EnigmeSync] PONG ← {enigme_prefix} ({payload})")
+
+    # ── Gestion FERMETURE ─────────────────────────────────────── #
+    if topic.endswith("/STATE"):
+        if payload == "FERMETURE":
+            fermeture_set.add(enigme_prefix)
+            return
         else:
-            enigme_prefix = "/".join(parts[:3])
+            fermeture_set.discard(enigme_prefix)
 
-        if topic.endswith("/STATE"):
-            if payload == "FERMETURE":
-                fermeture_set.add(enigme_prefix)
-                _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → FERMETURE, écriture bloquée")
-                return
-            else:
-                fermeture_set.discard(enigme_prefix)
-                _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → {payload}, écriture débloquée")
+    if enigme_prefix in fermeture_set:
+        return
 
-        if enigme_prefix in fermeture_set:
-            _LOGGER.debug(f"[EnigmeSync] Ignoré (FERMETURE) : {topic} = {payload}")
-            return
-            
-        # ── Réponse au PING : annule le timeout ──────────────────────── #
-        if topic.endswith("/STATE") and enigme_prefix in pending_pings:
-            timer = pending_pings.pop(enigme_prefix)
-            timer.cancel()
-            hass.async_create_task(_set_ping_entity(enigme_prefix, True))
-            _LOGGER.debug(f"[EnigmeSync] PONG ← {enigme_prefix} ({payload})")
-            
-        if any(p in topic_blacklist for p in parts):
-            _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
-            return
+    if any(p in topic_blacklist for p in parts):
+        return
 
-        _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
-        await write_queue.put((parts, payload))
-
-    await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
+    await write_queue.put((parts, payload))
 
     # ── SERVICE sync ──────────────────────────────────────────────────── #
     async def handle_sync(call):
@@ -236,38 +229,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _ping_recursive_with_timeout(data, [])
             await asyncio.sleep(ping_interval)
 
-    async def _ping_recursive_with_timeout(node, path_parts):
-        """Parcourt le JSON, envoie PING et arme le timeout."""
-        if not isinstance(node, dict):
-            return
+async def _ping_recursive_with_timeout(node, path_parts):
+    if not isinstance(node, dict):
+        _LOGGER.warning(f"[EnigmeSync] PING skip (not dict) at {'/'.join(path_parts)}: {node}")
+        return
 
-        for key, value in node.items():
-            child_parts = path_parts + [key]
-            child_depth = len(child_parts)
+    for key, value in node.items():
+        child_parts = path_parts + [key]
+        child_depth = len(child_parts)
 
-            if child_depth in action_depths:
-                enigme_prefix = "/".join(child_parts)
-                action_topic = enigme_prefix + f"/{TOPIC_ACTION_SUFFIX}"
+        _LOGGER.debug(f"[EnigmeSync] PING recurse: {'/'.join(child_parts)} depth={child_depth}")
 
-                # Annule un éventuel timer précédent
-                old_timer = pending_pings.pop(enigme_prefix, None)
-                if old_timer:
-                    old_timer.cancel()
+        if child_depth in action_depths:
+            enigme_prefix = "/".join(child_parts)
+            action_topic = enigme_prefix + f"/{TOPIC_ACTION_SUFFIX}"
 
-                # Envoie PING
-                await mqtt.async_publish(hass, action_topic, PING_PAYLOAD)
-                _LOGGER.debug(f"[EnigmeSync] PING → {action_topic}")
+            old_timer = pending_pings.pop(enigme_prefix, None)
+            if old_timer:
+                old_timer.cancel()
 
-                # Arme le timeout
-                timer = hass.loop.call_later(
-                    PING_TIMEOUT,
-                    _ping_timeout,
-                    enigme_prefix
-                )
-                pending_pings[enigme_prefix] = timer
+            await mqtt.async_publish(hass, action_topic, PING_PAYLOAD)
+            _LOGGER.info(f"[EnigmeSync] PING → {action_topic}")
 
-            else:
-                await _ping_recursive_with_timeout(value, child_parts)
+            timer = hass.loop.call_later(
+                PING_TIMEOUT,
+                _ping_timeout,
+                enigme_prefix
+            )
+            pending_pings[enigme_prefix] = timer
+
+        else:
+            await _ping_recursive_with_timeout(value, child_parts)
 
     # ── SERVICE start_ping ────────────────────────────────────────────── #
     async def handle_start_ping(call):
