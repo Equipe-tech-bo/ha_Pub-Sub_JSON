@@ -44,7 +44,7 @@ async def _json_writer(hass: HomeAssistant, json_path: str, queue: asyncio.Queue
             await _async_save_json(hass, json_path, cleaned)
             _LOGGER.debug(f"[EnigmeSync] Écrit [{'/'.join(parts)}] = {payload}")
         except Exception as e:
-            _LOGGER.error(f"[EnigmeSync] Erreur écriture JSON : {e}")
+            _LOGGER.error(f"[EnigmeSync] Erreur écriture JSON : {e}")²
         finally:
             queue.task_done()
 
@@ -127,7 +127,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     write_queue = asyncio.Queue()
     _write_queues[entry.entry_id] = write_queue
 
-    writer_task = hass.async_create_task(
+    writer_task = hass.loop.create_task(
         _json_writer(hass, json_path, write_queue),
         name=f"enigme_sync_writer_{entry.entry_id}"
     )
