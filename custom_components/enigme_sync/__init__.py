@@ -16,6 +16,8 @@ from .const import (
     DEFAULT_JSON_PATH,
     DEFAULT_TOPIC_BLACKLIST,
     DEFAULT_ACTION_DEPTHS,
+    DEFAULT_PING_INTERVAL,
+    PING_PAYLOAD,
 )
 
 
@@ -25,89 +27,61 @@ _LOGGER = logging.getLogger(__name__)
 _write_queues: dict[str, asyncio.Queue] = {}
 
 
-
 async def _json_writer(hass: HomeAssistant, json_path: str, queue: asyncio.Queue):
-    """
-    Coroutine unique qui traite les écritures JSON une par une.
-    Tourne en permanence tant que l'entry est chargée.
-    """
     while True:
         item = await queue.get()
-
-        if item is None:            # Signal d'arrêt propre
+        if item is None:
             queue.task_done()
             break
-
         parts, payload = item
-
         try:
             data = await _async_load_json(hass, json_path)
-
             if payload == "" or payload is None:
                 _delete_in_dict(data, parts)
             else:
                 _set_nested(data, parts, payload)
-
             cleaned = _clean_empty(data) or {}
             await _async_save_json(hass, json_path, cleaned)
-
             _LOGGER.debug(f"[EnigmeSync] Écrit [{'/'.join(parts)}] = {payload}")
-
         except Exception as e:
             _LOGGER.error(f"[EnigmeSync] Erreur écriture JSON : {e}")
-
         finally:
             queue.task_done()
 
+
 def _parse_list_str(raw: str, cast=str) -> list:
-    """Convertit une chaîne 'A, B, C' en liste typée."""
     return [cast(x.strip()) for x in raw.split(",") if x.strip()]
 
+
 def _clean_empty(node):
-    """
-    Supprime récursivement les clés dont la valeur est vide ou ne contient
-    que des valeurs vides (dict vide, string vide, None).
-    Retourne None si le nœud entier est vide après nettoyage.
-    """
     if not isinstance(node, dict):
-        # Valeur scalaire : vide si None ou string vide
         if node is None or node == "":
             return None
         return node
-
     cleaned = {}
     for key, value in node.items():
         result = _clean_empty(value)
         if result is not None:
             cleaned[key] = result
-
-    # Si le dict est vide après nettoyage, on retourne None
     return cleaned if cleaned else None
 
+
 def _delete_in_dict(data: dict, keys: list):
-    """
-    Supprime la clé terminale dans le dict imbriqué selon le chemin keys.
-    Nettoie ensuite les parents devenus vides.
-    """
     if not keys:
         return
-
     key = keys[0]
-
     if len(keys) == 1:
-        # Clé terminale : on supprime
         data.pop(key, None)
         return
-
     if key in data and isinstance(data[key], dict):
         _delete_in_dict(data[key], keys[1:])
-        # Si le sous-dict est maintenant vide, on supprime le parent aussi
         if not data[key]:
             data.pop(key, None)
-            
+
+
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Recharge l'entrée si les options sont modifiées."""
     await hass.config_entries.async_reload(entry.entry_id)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
@@ -122,7 +96,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get("json_path") or
         DEFAULT_JSON_PATH
     )
-
     if not json_path.startswith("/"):
         json_path = "/" + json_path
 
@@ -146,39 +119,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info(f"[EnigmeSync] Action depths  : {action_depths}")
 
     await _async_ensure_json_file(hass, json_path)
-    
+
     # ── Énigmes en état FERMETURE ────────────────────────────────────── #
     fermeture_set: set[str] = set()
-    
+
     # ── Queue d'écriture ──────────────────────────────────────────────── #
     write_queue = asyncio.Queue()
     _write_queues[entry.entry_id] = write_queue
 
-    # Lance la coroutine d'écriture en tâche de fond
     writer_task = hass.async_create_task(
         _json_writer(hass, json_path, write_queue),
         name=f"enigme_sync_writer_{entry.entry_id}"
     )
-    
+
     # ── Variables PING ────────────────────────────────────────────────── #
     ping_task: asyncio.Task | None = None
     ping_running = False
     ping_interval = DEFAULT_PING_INTERVAL
-    
+
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
         topic = msg.topic
         payload = msg.payload
-    
         parts = topic.split("/")
-    
-        # ── Préfixe fixé à profondeur 3 (BR/LIEU/ENIGME) ─────────────────── #
+
         if len(parts) < 3:
             enigme_prefix = "/".join(parts)
         else:
-            enigme_prefix = "/".join(parts[:3])  # toujours BR/PRISON/TABLEAU_DES_SORTS
-    
-        # ── Gestion du flag FERMETURE ────────────────────────────────────── #
+            enigme_prefix = "/".join(parts[:3])
+
         if topic.endswith("/STATE"):
             if payload == "FERMETURE":
                 fermeture_set.add(enigme_prefix)
@@ -187,21 +156,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 fermeture_set.discard(enigme_prefix)
                 _LOGGER.debug(f"[EnigmeSync] {enigme_prefix} → {payload}, écriture débloquée")
-    
-        # ── Si l'énigme est en FERMETURE → on ignore ─────────────────────── #
+
         if enigme_prefix in fermeture_set:
             _LOGGER.debug(f"[EnigmeSync] Ignoré (FERMETURE) : {topic} = {payload}")
             return
-    
-        # ── Blacklist ─────────────────────────────────────────────────────── #
+
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
             return
 
         _LOGGER.debug(f"[EnigmeSync] Reçu [{topic}] : {payload}")
-        _LOGGER.debug(f"[EnigmeSync] Parts : {parts}")
-        
-        # On empile dans la queue, on n'écrit plus directement
         await write_queue.put((parts, payload))
 
     await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
@@ -211,57 +175,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         l1 = call.data.get("level1", "").strip()
         l2 = call.data.get("level2", "").strip()
         l3 = call.data.get("level3", "").strip()
-
         parts = [p for p in [l1, l2, l3] if p]
 
-        # Attend que la queue soit vide avant de lire
-        # pour être sûr d'avoir le JSON à jour
         await write_queue.join()
-
         data = await _async_load_json(hass, json_path)
 
         if parts:
             subtree = _get_nested(data, parts)
             if subtree is None:
-                _LOGGER.warning(f"[EnigmeSync] Chemin introuvable dans le JSON : {'.'.join(parts)}")
+                _LOGGER.warning(f"[EnigmeSync] Chemin introuvable : {'.'.join(parts)}")
                 return
             base_topic = "/".join(parts)
         else:
-            subtree    = data
+            subtree = data
             base_topic = ""
 
         await _publish_recursive(hass, subtree, base_topic, action_depths, topic_blacklist)
 
     hass.services.async_register(DOMAIN, "sync", handle_sync)
 
-    # ── Nettoyage a l'unload ───────────────────────────────────────────── #
-    async def _on_unload():
-        # Envoie le signal d'arrêt à la coroutine writer
-        await write_queue.put(None)
-        await asyncio.wait_for(writer_task, timeout=5.0)
-        _write_queues.pop(entry.entry_id, None)
-        _LOGGER.debug("[EnigmeSync] Writer arrêté proprement")
-
-    entry.async_on_unload(_on_unload)
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-
-    return True
-    
     # ── PING périodique ───────────────────────────────────────────────── #
     async def _ping_all_enigmes():
-        """Envoie PING sur le topic ACTION de chaque énigme du JSON."""
+        nonlocal ping_running
         while ping_running:
-            await write_queue.join()  # attend que le JSON soit à jour
-
+            await write_queue.join()
             data = await _async_load_json(hass, json_path)
-
             await _ping_recursive(hass, data, [], action_depths, topic_blacklist)
-
             await asyncio.sleep(ping_interval)
 
     # ── SERVICE start_ping ────────────────────────────────────────────── #
     async def handle_start_ping(call):
-        nonlocal ping_task, ping_running, ping_interval  # ✅ binding trouvé
+        nonlocal ping_task, ping_running, ping_interval
 
         ping_interval = call.data.get("interval", DEFAULT_PING_INTERVAL)
 
@@ -281,7 +225,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # ── SERVICE stop_ping ─────────────────────────────────────────────── #
     async def handle_stop_ping(call):
-        nonlocal ping_running, ping_task  # ✅ binding trouvé
+        nonlocal ping_running, ping_task
 
         ping_running = False
         if ping_task:
@@ -292,38 +236,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "start_ping", handle_start_ping)
     hass.services.async_register(DOMAIN, "stop_ping", handle_stop_ping)
 
+    # ── Nettoyage à l'unload ──────────────────────────────────────────── #
+    async def _on_unload():
+        nonlocal ping_running, ping_task
+        # Arrêt du ping
+        ping_running = False
+        if ping_task:
+            ping_task.cancel()
+            ping_task = None
+        # Arrêt du writer
+        await write_queue.put(None)
+        await asyncio.wait_for(writer_task, timeout=5.0)
+        _write_queues.pop(entry.entry_id, None)
+        _LOGGER.debug("[EnigmeSync] Writer arrêté proprement")
+
+    entry.async_on_unload(_on_unload)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    return True  # ← maintenant APRÈS tout l'enregistrement
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, "sync")
+    hass.services.async_remove(DOMAIN, "start_ping")
+    hass.services.async_remove(DOMAIN, "stop_ping")
     return True
 
 
 # ── PUBLICATION RECURSIVE ─────────────────────────────────────────────── #
-async def _publish_recursive(
-    hass,
-    node,
-    base_topic: str,
-    action_depths: list,
-    topic_blacklist: list,
-):
+async def _publish_recursive(hass, node, base_topic: str, action_depths: list, topic_blacklist: list):
     if not isinstance(node, dict):
         return
 
-    # Vérifie si on est déjà à la bonne profondeur
     current_depth = len(base_topic.split("/")) if base_topic else 0
 
     if current_depth in action_depths:
-        # On est exactement sur le nœud cible → on publie directement
         await _publish_action(hass, node, base_topic, topic_blacklist)
         return
 
     for key, value in node.items():
-
         if key in topic_blacklist:
             continue
-
         child_topic = f"{base_topic}/{key}" if base_topic else key
-        depth       = len(child_topic.split("/"))
-
+        depth = len(child_topic.split("/"))
         if depth in action_depths:
             await _publish_action(hass, value, child_topic, topic_blacklist)
         else:
@@ -331,31 +286,16 @@ async def _publish_recursive(
 
 
 async def _publish_action(hass, node: dict, enigme_topic: str, topic_blacklist: list):
-    """
-    Publie sur ENIGME/ACTION toutes les données du nœud enigme en un seul message.
-
-    Exemple de nœud :
-    {
-        "DATA": { "VALIDE": "1", "TEST": "0" },
-        "STATUS": "SOLVED"
-    }
-
-    Publie :
-        BR/CRYPTE/SOCLE_MAGIE/ACTION → sync { "DATA": { "VALIDE": "1", "TEST": "0" }, "STATUS": "SOLVED" }
-    """
     if not isinstance(node, dict):
         return
 
     action_topic = f"{enigme_topic}/{TOPIC_ACTION_SUFFIX}"
 
-    # On filtre les clés blacklistées et on reconstruit un dict propre
     filtered = {}
     for key, value in node.items():
         if key in topic_blacklist:
             continue
-
         if isinstance(value, dict):
-            # Filtre aussi les sous-clés blacklistées
             sub_filtered = {
                 sub_key: sub_val
                 for sub_key, sub_val in value.items()
@@ -369,9 +309,7 @@ async def _publish_action(hass, node: dict, enigme_topic: str, topic_blacklist: 
     if not filtered:
         return
 
-    # Sérialisation en JSON compact
     payload = f"{SYNC_PAYLOAD_PREFIX} {json.dumps(filtered, ensure_ascii=False)}"
-
     _LOGGER.info(f"[EnigmeSync] Publish [{action_topic}] : {payload}")
     await mqtt.async_publish(hass, action_topic, payload)
 
@@ -406,12 +344,10 @@ async def _async_ensure_json_file(hass, path: str):
 def _set_nested(d: dict, keys: list, value):
     for key in keys[:-1]:
         existing = d.get(key)
-        # Si la valeur existante n'est pas un dict (ex: string), on l'écrase
         if not isinstance(existing, dict):
             d[key] = {}
         d = d[key]
     d[keys[-1]] = value
-
 
 
 def _get_nested(d: dict, keys: list):
@@ -422,16 +358,14 @@ def _get_nested(d: dict, keys: list):
             return None
     return d
 
-# ── HORS de async_setup_entry ─────────────────────────────────────────── #
+
+# ── PING RECURSIVE (hors setup_entry) ────────────────────────────────── #
 async def _ping_recursive(hass, node, path_parts, action_depths, topic_blacklist):
-    """Parcourt le JSON et envoie PING à la bonne profondeur."""
     if not isinstance(node, dict):
         return
-
     for key, value in node.items():
         child_parts = path_parts + [key]
         child_depth = len(child_parts)
-
         if child_depth in action_depths:
             enigme_topic = "/".join(child_parts) + f"/{TOPIC_ACTION_SUFFIX}"
             _LOGGER.debug(f"[EnigmeSync] PING → {enigme_topic}")
