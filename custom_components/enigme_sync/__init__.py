@@ -136,6 +136,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ping_task: asyncio.Task | None = None
     ping_running = False
     ping_interval = DEFAULT_PING_INTERVAL
+    pending_pings: dict[str, asyncio.TimerHandle] = {}
+
+    def _enigme_entity_id(enigme_prefix: str) -> str:
+        """Convertit BR/CRYPTE/SOCLE_MAGIE → input_boolean.br_crypte_socle_magie_ping"""
+        name = enigme_prefix.replace("/", "_").lower()
+        return f"{PING_ENTITY_PREFIX}{name}{PING_ENTITY_SUFFIX}"
+
+    async def _set_ping_entity(enigme_prefix: str, state: bool):
+        """Met à jour l'input_boolean correspondant."""
+        entity_id = _enigme_entity_id(enigme_prefix)
+        service = "turn_on" if state else "turn_off"
+        try:
+            await hass.services.async_call(
+                "input_boolean", service,
+                {"entity_id": entity_id},
+                blocking=False
+            )
+            _LOGGER.debug(f"[EnigmeSync] {entity_id} → {state}")
+        except Exception as e:
+            _LOGGER.warning(f"[EnigmeSync] Impossible de set {entity_id}: {e}")
+
+    def _ping_timeout(enigme_prefix: str):
+        """Appelé si aucun STATE reçu après PING_TIMEOUT."""
+        pending_pings.pop(enigme_prefix, None)
+        hass.async_create_task(_set_ping_entity(enigme_prefix, False))
+        _LOGGER.warning(f"[EnigmeSync] TIMEOUT PING → {enigme_prefix}")
 
     # ── CALLBACK MQTT ─────────────────────────────────────────────────── #
     async def mqtt_message_received(msg):
@@ -160,7 +186,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if enigme_prefix in fermeture_set:
             _LOGGER.debug(f"[EnigmeSync] Ignoré (FERMETURE) : {topic} = {payload}")
             return
-
+            
+        # ── Réponse au PING : annule le timeout ──────────────────────── #
+        if topic.endswith("/STATE") and enigme_prefix in pending_pings:
+            timer = pending_pings.pop(enigme_prefix)
+            timer.cancel()
+            hass.async_create_task(_set_ping_entity(enigme_prefix, True))
+            _LOGGER.debug(f"[EnigmeSync] PONG ← {enigme_prefix} ({payload})")
+            
         if any(p in topic_blacklist for p in parts):
             _LOGGER.debug(f"[EnigmeSync] Topic ignoré (blacklist) : {topic}")
             return
@@ -196,12 +229,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # ── PING périodique ───────────────────────────────────────────────── #
     async def _ping_all_enigmes():
-        nonlocal ping_running
+        """Envoie PING et démarre un timer par énigme."""
         while ping_running:
             await write_queue.join()
             data = await _async_load_json(hass, json_path)
-            await _ping_recursive(hass, data, [], action_depths, topic_blacklist)
+            await _ping_recursive_with_timeout(data, [])
             await asyncio.sleep(ping_interval)
+
+    async def _ping_recursive_with_timeout(node, path_parts):
+        """Parcourt le JSON, envoie PING et arme le timeout."""
+        if not isinstance(node, dict):
+            return
+
+        for key, value in node.items():
+            child_parts = path_parts + [key]
+            child_depth = len(child_parts)
+
+            if child_depth in action_depths:
+                enigme_prefix = "/".join(child_parts)
+                action_topic = enigme_prefix + f"/{TOPIC_ACTION_SUFFIX}"
+
+                # Annule un éventuel timer précédent
+                old_timer = pending_pings.pop(enigme_prefix, None)
+                if old_timer:
+                    old_timer.cancel()
+
+                # Envoie PING
+                await mqtt.async_publish(hass, action_topic, PING_PAYLOAD)
+                _LOGGER.debug(f"[EnigmeSync] PING → {action_topic}")
+
+                # Arme le timeout
+                timer = hass.loop.call_later(
+                    PING_TIMEOUT,
+                    _ping_timeout,
+                    enigme_prefix
+                )
+                pending_pings[enigme_prefix] = timer
+
+            else:
+                await _ping_recursive_with_timeout(value, child_parts)
 
     # ── SERVICE start_ping ────────────────────────────────────────────── #
     async def handle_start_ping(call):
