@@ -166,7 +166,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         topic = msg.topic
         payload = msg.payload
         parts = topic.split("/")
-    
+        
+        _LOGGER.info(f"[EnigmeSync] MQTT REÇU: {topic} = {payload}")
+        
         if len(parts) < 3:
             enigme_prefix = "/".join(parts)
         else:
