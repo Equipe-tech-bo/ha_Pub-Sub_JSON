@@ -25,3 +25,23 @@ sync:
       example: "SOCLE_MAGIE"
       selector:
         text:
+        
+start_ping:
+  name: "Démarrer le PING périodique"
+  description: "Envoie PING régulièrement à toutes les énigmes du JSON"
+  fields:
+    interval:
+      name: "Intervalle (secondes)"
+      description: "Temps entre chaque série de PINGs"
+      required: false
+      default: 30
+      example: 30
+      selector:
+        number:
+          min: 5
+          max: 300
+          unit_of_measurement: s
+
+stop_ping:
+  name: "Arrêter le PING périodique"
+  description: "Stoppe l'envoi périodique de PING"
