@@ -324,6 +324,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(_on_unload)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    unsub = await mqtt.async_subscribe(hass, mqtt_filter, mqtt_message_received)
+    entry.async_on_unload(unsub)
+    
     return True  # ← maintenant APRÈS tout l'enregistrement
 
 
