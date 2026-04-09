@@ -17,3 +17,7 @@ DEFAULT_PING_INTERVAL = 30
 
 # Payload du ping
 PING_PAYLOAD = "PING"
+
+PING_TIMEOUT = 5  # secondes
+PING_ENTITY_PREFIX = "input_boolean."
+PING_ENTITY_SUFFIX = "_ping"
