@@ -45,3 +45,27 @@ start_ping:
 stop_ping:
   name: "Arrêter le PING périodique"
   description: "Stoppe l'envoi périodique de PING"
+  
+ping_once:
+  name: "Ping manuel"
+  description: "Envoie un PING immédiat à une ou toutes les énigmes"
+  fields:
+    level1:
+      name: "Niveau 1 (ex: BR)"
+      description: "Laisser vide pour tout pinger"
+      required: false
+      example: "BR"
+      selector:
+        text:
+    level2:
+      name: "Niveau 2 (ex: CRYPTE)"
+      required: false
+      example: "CRYPTE"
+      selector:
+        text:
+    level3:
+      name: "Niveau 3 (ex: SOCLE_MAGIE)"
+      required: false
+      example: "SOCLE_MAGIE"
+      selector:
+        text:
