@@ -177,6 +177,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         else:
             enigme_prefix = "/".join(parts[:3])
     
+        # ── Ping manuel détecté sur un topic ACTION ───────────────────── #
+        # Si quelqu'un envoie PING manuellement, on enregistre l'attente
+        # de la même façon que le ping automatique
+        if topic.endswith("/ACTION") and payload == PING_PAYLOAD:
+            _LOGGER.info(f"[EnigmeSync] PING manuel détecté → {enigme_prefix}")
+            
+            # Annule un timer existant si présent (ping auto en cours)
+            old_timer = pending_pings.pop(enigme_prefix, None)
+            if old_timer:
+                old_timer.cancel()
+            
+            # Enregistre le timer d'attente de réponse
+            timer = hass.loop.call_later(
+                PING_TIMEOUT,
+                _ping_timeout,
+                enigme_prefix
+            )
+            pending_pings[enigme_prefix] = timer
+            # Ne pas stocker ce message dans le JSON → return
+            return
+    
         # ── Réponse au PING (TOUJOURS traité, même en FERMETURE) ──── #
         if topic.endswith("/STATE") and enigme_prefix in pending_pings:
             timer = pending_pings.pop(enigme_prefix)
@@ -307,7 +328,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "start_ping", handle_start_ping)
     hass.services.async_register(DOMAIN, "stop_ping", handle_stop_ping)
-
+    
+    # ── SERVICE ping_once ─────────────────────────────────────────────── #
+    async def handle_ping_once(call):
+        """Ping manuel : envoie PING immédiatement, sans démarrer le ping auto."""
+        l1 = call.data.get("level1", "").strip()
+        l2 = call.data.get("level2", "").strip()
+        l3 = call.data.get("level3", "").strip()
+        parts = [p for p in [l1, l2, l3] if p]
+    
+        await write_queue.join()
+        data = await _async_load_json(hass, json_path)
+    
+        # Filtre le sous-arbre si un chemin est fourni
+        if parts:
+            subtree = _get_nested(data, parts)
+            if subtree is None:
+                _LOGGER.warning(f"[EnigmeSync] ping_once : chemin introuvable {parts}")
+                return
+        else:
+            subtree = data
+            parts = []
+    
+        # Réutilise la même logique récursive que le ping auto
+        await _ping_recursive_with_timeout(subtree, parts)
+        _LOGGER.info(f"[EnigmeSync] Ping manuel envoyé (chemin: {parts or 'ALL'})")
+    
+    hass.services.async_register(DOMAIN, "ping_once", handle_ping_once)
     # ── Nettoyage à l'unload ──────────────────────────────────────────── #
     async def _on_unload():
         nonlocal ping_running, ping_task
@@ -335,6 +382,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, "sync")
     hass.services.async_remove(DOMAIN, "start_ping")
     hass.services.async_remove(DOMAIN, "stop_ping")
+    hass.services.async_remove(DOMAIN, "ping_once")
     return True
 
 
